@@ -1,0 +1,98 @@
+name: Build and Push Custom Chatwoot Image
+
+on:
+  push:
+    branches: [develop, main]
+    paths:
+      - 'Dockerfile'
+      - 'extensions/**'
+      - 'scripts/**'
+      - 'lib/tasks/**'
+      - 'docker-entrypoint-custom.sh'
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+    inputs:
+      chatwoot_version:
+        description: 'Versão do Chatwoot base (ex: v4.5.1)'
+        required: false
+        default: 'v4.5.2'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: vbn-marketing/chatwoot-kanban
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=v{{date 'YYYYMMDD'}}-{{sha}},enable={{is_default_branch}}
+      
+      - name: Determine Chatwoot version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.chatwoot_version }}" ]]; then
+            echo "chatwoot_version=${{ github.event.inputs.chatwoot_version }}" >> $GITHUB_OUTPUT
+          else
+            # Extrair versão do Dockerfile ou usar padrão
+            VERSION=$(grep "ARG CHATWOOT_VERSION=" Dockerfile | cut -d'=' -f2 || echo "v4.5.1")
+            echo "chatwoot_version=${VERSION}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CHATWOOT_VERSION=${{ steps.version.outputs.chatwoot_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Generate deployment summary
+        run: |
+          echo "## 🚀 Imagem Construída com Sucesso" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Imagem:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '${{ steps.meta.outputs.tags }}' | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Versão base Chatwoot:** \`${{ steps.version.outputs.chatwoot_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Como usar:" >> $GITHUB_STEP_SUMMARY
+          echo '```yaml' >> $GITHUB_STEP_SUMMARY
+          echo 'services:' >> $GITHUB_STEP_SUMMARY
+          echo '  chatwoot_app:' >> $GITHUB_STEP_SUMMARY
+          echo "    image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo '    # ... outras configurações' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
